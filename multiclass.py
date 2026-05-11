@@ -617,7 +617,7 @@ def cv_bar_chart(cv_results: dict) -> None:
     ax.set_xticklabels(model_names, rotation=15, ha="right")
     ax.set_ylim(0, 1.1)
     ax.set_ylabel("Score")
-    ax.set_title("Cross-Validation Test Scores by Model", fontweight="bold")
+    ax.set_title("Cross-Validation Performance Scores by Model", fontweight="bold")
     ax.legend(loc="lower right")
     ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
 
@@ -630,7 +630,6 @@ def cv_bar_chart(cv_results: dict) -> None:
     plt.tight_layout()
     plt.show()
     _save_fig(fig, "cv_comparison_chart.png")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 11. CONFUSION MATRICES
@@ -698,116 +697,6 @@ def feature_importances(rf_search, feature_names_filt):
     _save_fig(fig, "feature_importances.png")
 
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 8b. ADJUSTED K-FOLD CROSS VALIDATION (k=7)
-# Normal class has only 7 samples — k=7 guarantees every
-# Normal sample appears in a test fold exactly once
-# ──────────────────────────────────────────────────────────────────────────────
-
-def adjusted_cv_evaluation(svm_search, rf_search, lr_search, nb_search,
-                             X_train_filt, y_train, cv_results_k5):
-    separator("8b. ADJUSTED K-FOLD CV — k=7 (Normal Class Coverage)")
-
-    print("  Normal class has 7 samples — with k=5 some may never be")
-    print("  individually tested. k=7 guarantees each Normal sample")
-    print("  appears in a test fold exactly once.")
-    print(f"\n  Normal class samples      : 7")
-    print(f"  Number of folds           : 7")
-    print(f"  Normal samples / test fold: ~1")
-
-    cv_adjusted = StratifiedKFold(n_splits=7, shuffle=True, random_state=42)
-    cv_scoring  = {
-        "balanced_accuracy": "balanced_accuracy",
-        "macro_f1":          make_scorer(f1_score, average="macro"),
-    }
-    models = {
-        "Kernel SVM":          svm_search.best_estimator_,
-        "Random Forest":       rf_search.best_estimator_,
-        "Logistic Regression": lr_search.best_estimator_,
-        "Naive Bayes":         nb_search.best_estimator_,
-    }
-
-    print("\n  Running 7-fold CV on full training set...")
-    print("  " + "-" * 55)
-
-    adjusted_results = {}
-    for name, model in models.items():
-        scores = cross_validate(
-            model, X_train_filt, y_train,
-            cv=cv_adjusted, scoring=cv_scoring,
-            n_jobs=-1, return_train_score=True,
-        )
-        r = {
-            "Train Bal Acc":    np.round(scores["train_balanced_accuracy"].mean(), 4),
-            "CV Test Bal Acc":  np.round(scores["test_balanced_accuracy"].mean(),  4),
-            "CV Bal Acc Std":   np.round(scores["test_balanced_accuracy"].std(),   4),
-            "Train Macro F1":   np.round(scores["train_macro_f1"].mean(),          4),
-            "CV Test Macro F1": np.round(scores["test_macro_f1"].mean(),           4),
-            "CV F1 Std":        np.round(scores["test_macro_f1"].std(),            4),
-        }
-        adjusted_results[name] = r
-        print(f"\n  {name}")
-        print(f"  Train Balanced Acc  : {r['Train Bal Acc']}")
-        print(f"  CV Test Balanced Acc: {r['CV Test Bal Acc']} (+/- {r['CV Bal Acc Std']})")
-        print(f"  Train Macro F1      : {r['Train Macro F1']}")
-        print(f"  CV Test Macro F1    : {r['CV Test Macro F1']} (+/- {r['CV F1 Std']})")
-        print("  " + "-" * 50)
-
-    # ── Comparison table: k=5 vs k=7 ─────────────────────────────────────────
-    print("\n" + "=" * 75)
-    print("  COMPARISON — k=5 (original) vs k=7 (adjusted)")
-    print("  Metric: CV Test Balanced Accuracy")
-    print("=" * 75)
-    print(f"  {'Model':<22} {'k=5 CV Bal Acc':>16} {'k=7 CV Bal Acc':>16} {'Change':>10}")
-    print("  " + "-" * 68)
-    for name in models.keys():
-        k5   = cv_results_k5[name]["CV Test Balanced Acc"]
-        k7   = adjusted_results[name]["CV Test Bal Acc"]
-        diff = np.round(k7 - k5, 4)
-        direction = "▲" if diff > 0 else ("▼" if diff < 0 else "—")
-        print(f"  {name:<22} {k5:>16.4f} {k7:>16.4f} {direction} {abs(diff):>8.4f}")
-    print("=" * 75)
-
-    # ── Bar chart: k=5 vs k=7 ────────────────────────────────────────────────
-    model_names = list(models.keys())
-    k5_vals = [cv_results_k5[m]["CV Test Balanced Acc"] for m in model_names]
-    k5_stds = [cv_results_k5[m]["CV Test Bal Acc Std"]  for m in model_names]
-    k7_vals = [adjusted_results[m]["CV Test Bal Acc"]   for m in model_names]
-    k7_stds = [adjusted_results[m]["CV Bal Acc Std"]    for m in model_names]
-
-    x, width = np.arange(len(model_names)), 0.35
-    fig, ax = plt.subplots(figsize=(11, 6))
-    bars1 = ax.bar(x - width/2, k5_vals, width,
-                   yerr=k5_stds, capsize=5,
-                   label="k=5 CV (original)",
-                   color="steelblue", alpha=0.85)
-    bars2 = ax.bar(x + width/2, k7_vals, width,
-                   yerr=k7_stds, capsize=5,
-                   label="k=7 CV (adjusted)",
-                   color="darkorange", alpha=0.85)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(model_names, rotation=15, ha="right")
-    ax.set_ylim(0.85, 1.05)
-    ax.set_ylabel("CV Balanced Accuracy")
-    ax.set_title("k=5 vs k=7 Cross-Validation\nImpact on Normal Class Coverage",
-                 fontweight="bold")
-    ax.legend(loc="lower right")
-    ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.grid(axis="y", alpha=0.3)
-
-    for bar in list(bars1) + list(bars2):
-        ax.text(bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.005,
-                f"{bar.get_height():.3f}",
-                ha="center", va="bottom", fontsize=8)
-
-    plt.tight_layout()
-    plt.show()
-    _save_fig(fig, "kfold_comparison_k5_vs_k7.png")
-
-    return adjusted_results
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MAIN
