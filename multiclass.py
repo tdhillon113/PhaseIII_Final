@@ -1,24 +1,4 @@
-"""
-Cancer Gene Expression Classifier
-==================================
-Breast cancer subtype classification using gene expression data (GSE45827).
-Models: Kernel SVM, Random Forest, Logistic Regression, Naive Bayes
 
-Expected columns: 'samples', 'type', and gene expression feature columns (_at suffix).
-
-── HOW TO SET YOUR DATASET ──────────────────────────────────────────────────
-Option 1 (recommended): Edit the line below and set DATASET_PATH to your CSV:
-
-    DATASET_PATH = "Breast_GSE45827.csv"
-
-Option 2: Pass it on the command line at runtime:
-
-    python main.py --data path/to/Breast_GSE45827.csv
-
-Download the dataset from Kaggle:
-  https://www.kaggle.com/datasets/brunogrisci/breast-cancer-gene-expression-cumida
-─────────────────────────────────────────────────────────────────────────────
-"""
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATASET PATH — edit this to point to your CSV file
@@ -460,9 +440,8 @@ def cross_validation_evaluation(svm_search, rf_search, lr_search, nb_search,
 # ──────────────────────────────────────────────────────────────────────────────
 # 9. RESULTS TABLE
 # ──────────────────────────────────────────────────────────────────────────────
-
 def styled_results_table(svm_search, rf_search, lr_search, nb_search,
-                          X_test_filt, y_test, class_names):
+                          X_test_filt, y_test, class_names, cv_results):
     separator("9b. STYLED SUMMARY RESULTS TABLE")
 
     models = {
@@ -480,39 +459,63 @@ def styled_results_table(svm_search, rf_search, lr_search, nb_search,
 
     rows = []
     for name, model in models.items():
-        y_pred   = model.predict(X_test_filt)
-        bal_acc  = balanced_accuracy_score(y_test, y_pred)
-        macro_f1 = f1_score(y_test, y_pred, average="macro")
+        y_pred        = model.predict(X_test_filt)
+        test_bal_acc  = balanced_accuracy_score(y_test, y_pred)
+        test_macro_f1 = f1_score(y_test, y_pred, average="macro")
+        train_bal_acc = cv_results[name]["Train Balanced Acc"]
+        train_macro_f1 = cv_results[name]["Train Macro F1"]
+        cv_bal_acc    = cv_results[name]["CV Test Balanced Acc"]
+        cv_macro_f1   = cv_results[name]["CV Test Macro F1"]
         rows.append({
-            "model":    name,
-            "params":   hyperparams[name],
-            "macro_f1": f"{macro_f1:.4f}",
-            "bal_acc":  f"{bal_acc:.4f}",
+            "model":          name,
+            "params":         hyperparams[name],
+            "train_bal_acc":  f"{train_bal_acc:.4f}",
+            "train_macro_f1": f"{train_macro_f1:.4f}",
+            "cv_bal_acc":     f"{cv_bal_acc:.4f}",
+            "cv_macro_f1":    f"{cv_macro_f1:.4f}",
+            "test_bal_acc":   f"{test_bal_acc:.4f}",
+            "test_macro_f1":  f"{test_macro_f1:.4f}",
         })
-        print(f"  {name}: Bal Acc={bal_acc:.4f}  Macro F1={macro_f1:.4f}")
+        print(f"  {name}:")
+        print(f"    Train  — Bal Acc: {train_bal_acc:.4f}  Macro F1: {train_macro_f1:.4f}")
+        print(f"    CV     — Bal Acc: {cv_bal_acc:.4f}  Macro F1: {cv_macro_f1:.4f}")
+        print(f"    Test   — Bal Acc: {test_bal_acc:.4f}  Macro F1: {test_macro_f1:.4f}")
 
     # ── Build figure ──────────────────────────────────────────────────────────
-    col_headers = ["Breast Cancer\nSubtype", "Hyperparameters",
-                   "Macro-Average\nF1 Score", "Balanced\nAccuracy"]
+    col_headers = [
+        "Model",
+        "Hyperparameters",
+        "Train\nBal Acc",
+        "Train\nMacro F1",
+        "CV\nBal Acc",
+        "CV\nMacro F1",
+        "Test\nBal Acc",
+        "Test\nMacro F1",
+    ]
     n_rows = len(rows)
 
     fig_h = 1.0 + n_rows * 1.6
-    fig_w = 14
+    fig_w = 24
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     ax.set_xlim(0, fig_w)
     ax.set_ylim(0, fig_h)
     ax.axis("off")
 
-    col_widths = [3.2, 4.8, 3.0, 3.0]
+    col_widths = [3.2, 4.8, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]  # must sum to fig_w (20 content + 4 for model/params)
     col_x = [0]
     for w in col_widths[:-1]:
         col_x.append(col_x[-1] + w)
 
     header_h   = 0.9
     data_row_h = (fig_h - header_h) / n_rows
-    header_color = "#4a4a6a"
-    row_colors   = ["#ffffff", "#e8e8f0"]
+    header_color  = "#4a4a6a"
+    group_colors  = {
+        "train": "#d4e6f1",   # light blue tint for training columns
+        "cv":    "#d5f5e3",   # light green tint for CV columns
+        "test":  "#fdebd0",   # light orange tint for test columns
+    }
+    row_colors = ["#ffffff", "#f0f0f0"]
 
     def draw_cell(x, y, w, h, text, bg, fg="black", bold=False, fontsize=10):
         rect = plt.Rectangle((x, y), w, h,
@@ -523,23 +526,68 @@ def styled_results_table(svm_search, rf_search, lr_search, nb_search,
                 color=fg, fontweight="bold" if bold else "normal",
                 multialignment="center", linespacing=1.4)
 
-    y_top = fig_h - header_h
-    for hdr, w, x in zip(col_headers, col_widths, col_x):
-        draw_cell(x, y_top, w, header_h, hdr,
-                  bg=header_color, fg="white", bold=True, fontsize=10.5)
+    # Draw column group labels above headers
+    group_label_h = 0.45
+    group_specs = [
+        ("Training",   2, group_colors["train"]),
+        ("Cross-Val",  2, group_colors["cv"]),
+        ("Test",       2, group_colors["test"]),
+    ]
+    group_start_x = col_x[2]  # groups start after Model + Hyperparams columns
+    gx = group_start_x
+    for label, span, color in group_specs:
+        gw = sum(col_widths[2 + group_specs.index((label, span, color)) * 2:
+                            2 + group_specs.index((label, span, color)) * 2 + span])
+        draw_cell(gx, fig_h - group_label_h, gw, group_label_h,
+                  label, bg=color, fg="#2c2c2c", bold=True, fontsize=10)
+        gx += gw
 
+    # Draw column headers
+    y_top = fig_h - group_label_h - header_h
+    col_bg = (
+        ["#4a4a6a", "#4a4a6a"]                          # model, hyperparams
+        + [group_colors["train"]] * 2                   # train cols
+        + [group_colors["cv"]] * 2                      # cv cols
+        + [group_colors["test"]] * 2                    # test cols
+    )
+    col_fg = ["white", "white"] + ["#2c2c2c"] * 6
+
+    for hdr, w, x, bg, fg in zip(col_headers, col_widths, col_x, col_bg, col_fg):
+        draw_cell(x, y_top, w, header_h, hdr,
+                  bg=bg, fg=fg, bold=True, fontsize=9.5)
+
+    # Draw data rows
+    col_group = ["", "", "train", "train", "cv", "cv", "test", "test"]
     for i, row in enumerate(rows):
-        bg = row_colors[i % 2]
-        y  = y_top - (i + 1) * data_row_h
-        cells = [row["model"], row["params"], row["macro_f1"], row["bal_acc"]]
+        base_bg = row_colors[i % 2]
+        y = y_top - (i + 1) * data_row_h
+        cells = [
+            row["model"],
+            row["params"],
+            row["train_bal_acc"],
+            row["train_macro_f1"],
+            row["cv_bal_acc"],
+            row["cv_macro_f1"],
+            row["test_bal_acc"],
+            row["test_macro_f1"],
+        ]
         for j, (cell_text, w, x) in enumerate(zip(cells, col_widths, col_x)):
+            # Tint metric columns with their group color, blended with row stripe
+            if col_group[j] == "train":
+                bg = "#eaf4fb" if i % 2 == 0 else "#d4e6f1"
+            elif col_group[j] == "cv":
+                bg = "#eafaf1" if i % 2 == 0 else "#d5f5e3"
+            elif col_group[j] == "test":
+                bg = "#fef9f0" if i % 2 == 0 else "#fdebd0"
+            else:
+                bg = base_bg
             draw_cell(x, y, w, data_row_h, cell_text, bg=bg, bold=(j == 0))
 
     plt.title("Breast Cancer Gene Expression — Model Results Summary\n"
-              "Metrics: Macro-Average F1 Score  |  Balanced Accuracy",
+              "Balanced Accuracy  |  Macro F1  ·  across Training, Cross-Validation, and Test",
               fontsize=12, fontweight="bold", pad=14)
     plt.tight_layout()
-    plt.figure(fig.number)   # make this fig the active window before show
+    plt.figure(fig.number)
     plt.show(block=True)
     _save_fig(fig, "styled_results_table.png")
 
@@ -820,7 +868,7 @@ def main():
                             X_train_filt, y_train, cv_results)
 
     styled_results_table(svm_search, rf_search, lr_search, nb_search,
-                          X_test_filt, y_test, class_names)
+                          X_test_filt, y_test, class_names, cv_results)
 
     cv_bar_chart(cv_results)
 
