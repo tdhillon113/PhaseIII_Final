@@ -1,3 +1,24 @@
+"""
+Cancer Gene Expression Classifier
+==================================
+Breast cancer subtype classification using gene expression data (GSE45827).
+Models: Kernel SVM, Random Forest, Logistic Regression, Naive Bayes
+
+Expected columns: 'samples', 'type', and gene expression feature columns (_at suffix).
+
+── HOW TO SET YOUR DATASET ──────────────────────────────────────────────────
+Option 1 (recommended): Edit the line below and set DATASET_PATH to your CSV:
+
+    DATASET_PATH = "Breast_GSE45827.csv"
+
+Option 2: Pass it on the command line at runtime:
+
+    python main.py --data path/to/Breast_GSE45827.csv
+
+Download the dataset from Kaggle:
+  https://www.kaggle.com/datasets/brunogrisci/breast-cancer-gene-expression-cumida
+─────────────────────────────────────────────────────────────────────────────
+"""
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATASET PATH — edit this to point to your CSV file
@@ -113,34 +134,54 @@ def eda(df: pd.DataFrame) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def preprocess(df: pd.DataFrame):
-    separator("3. PREPROCESSING")
+    separator("3. PREPROCESSING — Chain: AFFX Removal → Variance Filter → Train/Test Split")
 
     # Feature / label split
-    X = df.drop(["samples", "type"], axis=1).values.astype(np.float64)
+    X     = df.drop(["samples", "type"], axis=1).values.astype(np.float64)
     y_raw = df["type"].values
 
     # Encode labels
     le = LabelEncoder()
-    y = le.fit_transform(y_raw)
+    y  = le.fit_transform(y_raw)
     class_names = le.classes_
     print(f"  Classes ({len(class_names)}): {class_names}")
     print(f"  Class counts: {dict(zip(class_names, np.bincount(y)))}")
 
-    # Train / test split (stratified, 70/30)
+    # ── Step 1: Remove AFFX control probes ───────────────────────────────────
+    feature_names = np.array(df.drop(["samples", "type"], axis=1).columns)
+    affx_mask     = np.array([not name.startswith("AFFX") for name in feature_names])
+    X_clean       = X[:, affx_mask]
+    feature_names_clean = feature_names[affx_mask]
+
+    print(f"\n  Step 1 — AFFX Probe Removal")
+    print(f"  Original features  : {X.shape[1]:,}")
+    print(f"  AFFX probes removed: {np.sum(~affx_mask):,}")
+    print(f"  Remaining features : {X_clean.shape[1]:,}")
+
+    # ── Step 2: Train/Test Split on cleaned data ──────────────────────────────
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42, stratify=y
+        X_clean, y, test_size=0.3, random_state=42, stratify=y
     )
-    print(f"\n  Train size: {X_train.shape[0]} | Test size: {X_test.shape[0]}")
+    X_train = np.asarray(X_train, dtype=np.float64)
+    X_test  = np.asarray(X_test,  dtype=np.float64)
+    y_train = np.asarray(y_train)
+    y_test  = np.asarray(y_test)
 
-    # Variance filtering (remove near-constant features)
-    stds = np.std(X_train, axis=0)
-    nonzero_mask = stds > 0.01
-    X_train_filt = X_train[:, nonzero_mask]
-    X_test_filt  = X_test[:, nonzero_mask]
-    print(f"  Features after variance filtering: {X_train_filt.shape[1]:,}  "
-          f"(removed {(~nonzero_mask).sum():,})")
+    # ── Step 3: Variance Threshold Filtering (std > 0.05) ────────────────────
+    stds     = np.std(X_train, axis=0)
+    var_mask = stds > 0.05
+    X_train_filt       = X_train[:, var_mask]
+    X_test_filt        = X_test[:,  var_mask]
+    feature_names_filt = feature_names_clean[var_mask]
 
-    return X_train_filt, X_test_filt, y_train, y_test, class_names, nonzero_mask, df
+    print(f"\n  Step 2 — Variance Filtering (std > 0.05)")
+    print(f"  Features before : {X_train.shape[1]:,}")
+    print(f"  Features removed: {np.sum(~var_mask):,}")
+    print(f"  Features after  : {X_train_filt.shape[1]:,}")
+    print(f"\n  Train size : {X_train_filt.shape[0]}")
+    print(f"  Test size  : {X_test_filt.shape[0]}")
+
+    return X_train_filt, X_test_filt, y_train, y_test, class_names, feature_names_filt, df
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -148,6 +189,7 @@ def preprocess(df: pd.DataFrame):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_pipelines_and_grids():
+    # Kernel SVM — StandardScaler + PCA (95% variance)
     svm_pipe = Pipeline([
         ("scaler", StandardScaler()),
         ("pca",    PCA(n_components=0.95, svd_solver="full")),
@@ -159,6 +201,7 @@ def build_pipelines_and_grids():
         "clf__gamma": [0.001, 0.01, "scale"],
     }
 
+    # Random Forest — no SelectKBest; RF does internal feature selection
     rf_pipe = Pipeline([
         ("clf", RandomForestClassifier(
             class_weight="balanced", n_jobs=-1, random_state=42)),
@@ -168,26 +211,40 @@ def build_pipelines_and_grids():
         "clf__max_features": ["sqrt", "log2"],
     }
 
+    # Logistic Regression — SelectKBest inside pipeline (no data leakage)
+    # K range 100–500: aggressive selection on already-filtered feature space
     lr_pipe = Pipeline([
-        ("select", SelectKBest(f_classif, k=1000)),
+        ("select", SelectKBest(f_classif, k=200)),
         ("scaler", StandardScaler()),
         ("clf",    LogisticRegression(
             max_iter=10000, tol=0.01,
             class_weight="balanced", solver="saga", random_state=42)),
     ])
     lr_grid = {
+        "select__k":    [100, 200, 300, 500],
         "clf__C":       [0.01, 0.1, 1, 10],
         "clf__penalty": ["l1", "l2"],
     }
 
+    # Naive Bayes — SelectKBest inside pipeline (no data leakage)
     nb_pipe = Pipeline([
-        ("select", SelectKBest(f_classif, k=1000)),
+        ("select", SelectKBest(f_classif, k=200)),
         ("clf",    GaussianNB()),
     ])
     nb_grid = {
-        "select__k":          [500, 1000, 2000],
-        "clf__var_smoothing":  np.logspace(-9, -3, 4),
+        "select__k":         [100, 200, 300, 500],
+        "clf__var_smoothing": np.logspace(-9, -3, 4),
     }
+
+    # Print pipeline summary
+    print("\n" + "=" * 55)
+    print("  PIPELINE SUMMARY")
+    print("=" * 55)
+    for name, pipe in [("Kernel SVM", svm_pipe), ("Random Forest", rf_pipe),
+                        ("Logistic Regression", lr_pipe), ("Naive Bayes", nb_pipe)]:
+        steps = " → ".join([s[0] for s in pipe.steps])
+        print(f"  {name:<22}: {steps}")
+    print("=" * 55)
 
     return (svm_pipe, svm_grid, rf_pipe, rf_grid,
             lr_pipe, lr_grid, nb_pipe, nb_grid)
@@ -417,7 +474,7 @@ def styled_results_table(svm_search, rf_search, lr_search, nb_search,
     hyperparams = {
         "Kernel SVM":          f"kernel: rbf\nC: {svm_search.best_params_['clf__C']}\ngamma: {svm_search.best_params_['clf__gamma']}",
         "Random Forest":       f"n_estimators: {rf_search.best_params_['clf__n_estimators']}\nmax_features: {rf_search.best_params_['clf__max_features']}",
-        "Logistic Regression": f"C: {lr_search.best_params_['clf__C']}\npenalty: {lr_search.best_params_['clf__penalty']}\nSelectKBest k=1000",
+        "Logistic Regression": f"C: {lr_search.best_params_['clf__C']}\npenalty: {lr_search.best_params_['clf__penalty']}\nSelectKBest k={lr_search.best_params_['select__k']}",
         "Naive Bayes":         f"var_smoothing: {nb_search.best_params_['clf__var_smoothing']:.0e}\nSelectKBest k={nb_search.best_params_['select__k']}",
     }
 
@@ -568,17 +625,15 @@ def confusion_matrices(svm_search, rf_search, lr_search, nb_search,
 # 12. RANDOM FOREST FEATURE IMPORTANCES
 # ──────────────────────────────────────────────────────────────────────────────
 
-def feature_importances(rf_search, df, nonzero_mask):
+def feature_importances(rf_search, feature_names_filt):
     separator("12. RANDOM FOREST FEATURE IMPORTANCES")
 
     rf_best     = rf_search.best_estimator_.named_steps["clf"]
     importances = rf_best.feature_importances_
     top20_idx   = np.argsort(importances)[::-1][:20]
 
-    feature_names  = np.array(df.drop(["samples", "type"], axis=1).columns)
-    filtered_names = feature_names[nonzero_mask]
-    top20_names    = filtered_names[top20_idx]
-    top20_scores   = importances[top20_idx]
+    top20_names  = feature_names_filt[top20_idx]
+    top20_scores = importances[top20_idx]
 
     print("\n  Top 20 Most Important Genes (Random Forest):")
     for rank, (gene, score) in enumerate(zip(top20_names, top20_scores), 1):
@@ -594,6 +649,117 @@ def feature_importances(rf_search, df, nonzero_mask):
     plt.show()
     _save_fig(fig, "feature_importances.png")
 
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8b. ADJUSTED K-FOLD CROSS VALIDATION (k=7)
+# Normal class has only 7 samples — k=7 guarantees every
+# Normal sample appears in a test fold exactly once
+# ──────────────────────────────────────────────────────────────────────────────
+
+def adjusted_cv_evaluation(svm_search, rf_search, lr_search, nb_search,
+                             X_train_filt, y_train, cv_results_k5):
+    separator("8b. ADJUSTED K-FOLD CV — k=7 (Normal Class Coverage)")
+
+    print("  Normal class has 7 samples — with k=5 some may never be")
+    print("  individually tested. k=7 guarantees each Normal sample")
+    print("  appears in a test fold exactly once.")
+    print(f"\n  Normal class samples      : 7")
+    print(f"  Number of folds           : 7")
+    print(f"  Normal samples / test fold: ~1")
+
+    cv_adjusted = StratifiedKFold(n_splits=7, shuffle=True, random_state=42)
+    cv_scoring  = {
+        "balanced_accuracy": "balanced_accuracy",
+        "macro_f1":          make_scorer(f1_score, average="macro"),
+    }
+    models = {
+        "Kernel SVM":          svm_search.best_estimator_,
+        "Random Forest":       rf_search.best_estimator_,
+        "Logistic Regression": lr_search.best_estimator_,
+        "Naive Bayes":         nb_search.best_estimator_,
+    }
+
+    print("\n  Running 7-fold CV on full training set...")
+    print("  " + "-" * 55)
+
+    adjusted_results = {}
+    for name, model in models.items():
+        scores = cross_validate(
+            model, X_train_filt, y_train,
+            cv=cv_adjusted, scoring=cv_scoring,
+            n_jobs=-1, return_train_score=True,
+        )
+        r = {
+            "Train Bal Acc":    np.round(scores["train_balanced_accuracy"].mean(), 4),
+            "CV Test Bal Acc":  np.round(scores["test_balanced_accuracy"].mean(),  4),
+            "CV Bal Acc Std":   np.round(scores["test_balanced_accuracy"].std(),   4),
+            "Train Macro F1":   np.round(scores["train_macro_f1"].mean(),          4),
+            "CV Test Macro F1": np.round(scores["test_macro_f1"].mean(),           4),
+            "CV F1 Std":        np.round(scores["test_macro_f1"].std(),            4),
+        }
+        adjusted_results[name] = r
+        print(f"\n  {name}")
+        print(f"  Train Balanced Acc  : {r['Train Bal Acc']}")
+        print(f"  CV Test Balanced Acc: {r['CV Test Bal Acc']} (+/- {r['CV Bal Acc Std']})")
+        print(f"  Train Macro F1      : {r['Train Macro F1']}")
+        print(f"  CV Test Macro F1    : {r['CV Test Macro F1']} (+/- {r['CV F1 Std']})")
+        print("  " + "-" * 50)
+
+    # ── Comparison table: k=5 vs k=7 ─────────────────────────────────────────
+    print("\n" + "=" * 75)
+    print("  COMPARISON — k=5 (original) vs k=7 (adjusted)")
+    print("  Metric: CV Test Balanced Accuracy")
+    print("=" * 75)
+    print(f"  {'Model':<22} {'k=5 CV Bal Acc':>16} {'k=7 CV Bal Acc':>16} {'Change':>10}")
+    print("  " + "-" * 68)
+    for name in models.keys():
+        k5   = cv_results_k5[name]["CV Test Balanced Acc"]
+        k7   = adjusted_results[name]["CV Test Bal Acc"]
+        diff = np.round(k7 - k5, 4)
+        direction = "▲" if diff > 0 else ("▼" if diff < 0 else "—")
+        print(f"  {name:<22} {k5:>16.4f} {k7:>16.4f} {direction} {abs(diff):>8.4f}")
+    print("=" * 75)
+
+    # ── Bar chart: k=5 vs k=7 ────────────────────────────────────────────────
+    model_names = list(models.keys())
+    k5_vals = [cv_results_k5[m]["CV Test Balanced Acc"] for m in model_names]
+    k5_stds = [cv_results_k5[m]["CV Test Bal Acc Std"]  for m in model_names]
+    k7_vals = [adjusted_results[m]["CV Test Bal Acc"]   for m in model_names]
+    k7_stds = [adjusted_results[m]["CV Bal Acc Std"]    for m in model_names]
+
+    x, width = np.arange(len(model_names)), 0.35
+    fig, ax = plt.subplots(figsize=(11, 6))
+    bars1 = ax.bar(x - width/2, k5_vals, width,
+                   yerr=k5_stds, capsize=5,
+                   label="k=5 CV (original)",
+                   color="steelblue", alpha=0.85)
+    bars2 = ax.bar(x + width/2, k7_vals, width,
+                   yerr=k7_stds, capsize=5,
+                   label="k=7 CV (adjusted)",
+                   color="darkorange", alpha=0.85)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(model_names, rotation=15, ha="right")
+    ax.set_ylim(0.85, 1.05)
+    ax.set_ylabel("CV Balanced Accuracy")
+    ax.set_title("k=5 vs k=7 Cross-Validation\nImpact on Normal Class Coverage",
+                 fontweight="bold")
+    ax.legend(loc="lower right")
+    ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.grid(axis="y", alpha=0.3)
+
+    for bar in list(bars1) + list(bars2):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.005,
+                f"{bar.get_height():.3f}",
+                ha="center", va="bottom", fontsize=8)
+
+    plt.tight_layout()
+    plt.show()
+    _save_fig(fig, "kfold_comparison_k5_vs_k7.png")
+
+    return adjusted_results
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MAIN
@@ -625,7 +791,7 @@ def main():
 
     (X_train_filt, X_test_filt,
      y_train, y_test,
-     class_names, nonzero_mask, df) = preprocess(df)
+     class_names, feature_names_filt, df) = preprocess(df)
 
     (svm_pipe, svm_grid,
      rf_pipe,  rf_grid,
@@ -650,6 +816,9 @@ def main():
         svm_search, rf_search, lr_search, nb_search,
         X_train_filt, y_train)
 
+    adjusted_cv_evaluation(svm_search, rf_search, lr_search, nb_search,
+                            X_train_filt, y_train, cv_results)
+
     styled_results_table(svm_search, rf_search, lr_search, nb_search,
                           X_test_filt, y_test, class_names)
 
@@ -658,7 +827,7 @@ def main():
     confusion_matrices(svm_search, rf_search, lr_search, nb_search,
                         X_test_filt, y_test, class_names)
 
-    feature_importances(rf_search, df, nonzero_mask)
+    feature_importances(rf_search, feature_names_filt)
 
     separator("ALL DONE")
     print(f"  All figures saved to: {plots_directory}/")
@@ -666,6 +835,7 @@ def main():
         "eda_class_distribution.png",
         "lc_svm.png", "lc_rf.png", "lc_lr.png", "lc_nb.png",
         "vc_svm_C.png", "vc_lr_C.png", "vc_rf_nest.png", "vc_nb_vs.png",
+        "kfold_comparison_k5_vs_k7.png",
         "styled_results_table.png",
         "cv_comparison_chart.png",
         "confusion_matrices.png",
