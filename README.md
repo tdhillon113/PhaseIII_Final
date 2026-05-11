@@ -12,3 +12,4 @@ conda activate final_proj_env
 ```bash
 python main.py
 ```
+[Warning: Binary Classification section will take a long time]
