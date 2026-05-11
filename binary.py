@@ -14,8 +14,7 @@ from binary_class_utils import (
     plot_random_forest_tuning_curve,
     plot_test_score_comparison
 )
-
-def main():
+def run_binary():
     csv_path = "wine_quality_merged.csv"
     plots_dir = Path("plots")
     plots_dir.mkdir(exist_ok=True)
@@ -124,4 +123,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_binary()
