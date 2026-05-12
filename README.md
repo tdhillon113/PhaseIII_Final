@@ -98,8 +98,8 @@ The `plots/` directory contains all visualizations:
    ```
 
 ### Data Preparation
-- ** Wine Quality Dataset **: `wine_quality_merged.csv` should be in the root directory
-- ** Breast Cancer Dataset **: Download `Breast_GSE45827.csv` from [Kaggle](https://www.kaggle.com/datasets/brunogrisci/breast-cancer-gene-expression-cumida) and place it in the root directory
+- Wine Quality Dataset : `wine_quality_merged.csv` should be in the root directory
+- Breast Cancer Dataset : Download `Breast_GSE45827.csv` from [Kaggle](https://www.kaggle.com/datasets/brunogrisci/breast-cancer-gene-expression-cumida) and place it in the root directory
 
 ## To Run the complete pipeline:
 ```bash
